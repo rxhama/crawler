@@ -17,10 +17,17 @@ while queue and i < max_depth:
     if url in visited:
         continue
 
-    response = requests.get(url, timeout=5)
+    try:
+        response = requests.get(url, timeout=5)
+    except requests.RequestException:
+        continue
+
+    final_url = response.url
+    if final_url in visited:
+        continue
+
     soup = BeautifulSoup(response.content, 'html.parser')
-    
-    visited[url] = soup.title.text
+    visited[final_url] = soup.title.text if soup.title else ''
     i += 1
 
     for tag in soup.find_all('a', href=True):
