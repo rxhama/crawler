@@ -2,38 +2,53 @@ from collections import deque
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+import psycopg
 
-queue = deque()
-visited = {}
-max_depth = 10
+from database import init_db, save_page, search_pages
+def main():
+    with psycopg.connect(
+        'dbname=crawler user=crawler password=crawler_password host=localhost port=5432'
+    ) as conn:
+        init_db(conn)
 
-# start = input('Enter start site: ').strip()
-start = 'https://www.google.com/'
-queue.append(start)
+        queue = deque()
+        visited = set()
+        max_pages = 10
 
-i = 0
-while queue and i < max_depth:
-    url = queue.popleft()
-    if url in visited:
-        continue
+        # start = input('Enter start site: ').strip()
+        start = 'https://www.google.com/'
+        queue.append(start)
 
-    try:
-        response = requests.get(url, timeout=5)
-    except requests.RequestException:
-        continue
+        i = 0
+        while queue and i < max_pages:
+            url = queue.popleft()
+            if url in visited:
+                continue
 
-    final_url = response.url
-    if final_url in visited:
-        continue
+            try:
+                response = requests.get(url, timeout=5)
+            except requests.RequestException:
+                continue
 
-    soup = BeautifulSoup(response.content, 'html.parser')
-    visited[final_url] = soup.title.text if soup.title else ''
-    i += 1
+            final_url = response.url
+            if final_url in visited:
+                continue
 
-    for tag in soup.find_all('a', href=True):
-        href = tag['href']
-        new_url = urljoin(url, href)
-        queue.append(new_url)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            title = soup.title.text if soup.title else ''
+            content = soup.get_text(' ', strip=True)
+            save_page(conn, final_url, title, content, response.status_code)
+            visited.add(final_url)
+            i += 1
 
-for link, title in visited.items():
-    print(title, f'({link})')
+            for tag in soup.find_all('a', href=True):
+                href = tag['href']
+                new_url = urljoin(final_url, href)
+                queue.append(new_url)
+
+        results = search_pages(conn, 'account')
+        for url, title in results:
+            print(title, url)
+
+if __name__ == '__main__':
+    main()
