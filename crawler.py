@@ -3,24 +3,24 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urldefrag
 
-from database import save_page
+from database import save_page, save_link
 
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024 # 5 MB
 
 def crawl(conn, start_url, max_pages):
-    queue = deque([start_url])
+    queue = deque([(None, start_url)])
     visited = set()
 
     pages_crawled = 0
     while queue and pages_crawled < max_pages:
-        url = queue.popleft()
-        if url in visited:
+        source_url, target_url = queue.popleft()
+        if target_url in visited:
             continue
 
         try:
-            response = requests.get(url, timeout=5)
+            response = requests.get(target_url, timeout=5)
         except requests.RequestException:
-            print(f'Failed to reach page: {url}')
+            print(f'Failed to reach page: {target_url}')
             continue
 
         final_url = response.url
@@ -48,6 +48,8 @@ def crawl(conn, start_url, max_pages):
         content = soup.get_text(' ', strip=True).replace('\x00', '')
 
         save_page(conn, final_url, title, content, response.status_code)
+        if source_url is not None:
+            save_link(conn, source_url, final_url)
 
         visited.add(final_url)
         pages_crawled += 1
@@ -56,4 +58,4 @@ def crawl(conn, start_url, max_pages):
             href = tag['href']
             new_url = urljoin(final_url, href)
             new_url, _ = urldefrag(new_url)
-            queue.append(new_url)
+            queue.append((final_url, new_url))

@@ -29,6 +29,15 @@ def init_db(conn):
             )
         ''')
 
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS links (
+                id SERIAL PRIMARY KEY,
+                source_url TEXT NOT NULL REFERENCES pages(url) ON DELETE CASCADE,
+                target_url TEXT NOT NULL REFERENCES pages(url) ON DELETE CASCADE,
+                UNIQUE (source_url, target_url)
+            )
+        ''')
+
 def save_page(conn, url, title, content, status_code):
     with conn.cursor() as cur:
         cur.execute('''
@@ -39,17 +48,15 @@ def save_page(conn, url, title, content, status_code):
 
         conn.commit()
 
-def search_pages(conn, query):
-    with conn.cursor() as cur:
-        cur.execute('''
-            SELECT url, title
-            FROM pages
-            WHERE title ILIKE %s
-                OR content ILIKE %s
-        ''', (f'%{query}%', f'%{query}%'))
-
-        return cur.fetchall()
-
 def clear_db(conn):
     with conn.cursor() as cur:
+        cur.execute('DELETE FROM links')
         cur.execute('DELETE FROM pages')
+
+def save_link(conn, source_url, target_url):
+    with conn.cursor() as cur:
+        cur.execute('''
+            INSERT INTO links (source_url, target_url)
+            VALUES (%s, %s)
+            ON CONFLICT (source_url, target_url) DO NOTHING
+        ''', (source_url, target_url))
