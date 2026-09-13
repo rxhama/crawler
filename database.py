@@ -27,6 +27,8 @@ def save_page(conn, url, title, content, status_code):
             ON CONFLICT (url) DO NOTHING
         ''', (url, title, content, status_code))
 
+        conn.commit()
+
 def search_pages(conn, query):
     with conn.cursor() as cur:
         cur.execute('''
