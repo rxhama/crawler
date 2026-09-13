@@ -12,10 +12,20 @@ def init_db(conn):
         ''')
 
         cur.execute('''
-            CREATE INDEX IF NOT EXISTS pages_content_search_idx
+            CREATE INDEX IF NOT EXISTS pages_search_idx
             ON pages
             USING GIN (
-                to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(content, ''))
+                (
+                    setweight(
+                        to_tsvector('english', COALESCE(title, '')),
+                        'A'
+                    )
+                    ||
+                    setweight(
+                        to_tsvector('english', COALESCE(content, '')),
+                        'B'
+                    )
+                )
             )
         ''')
 
