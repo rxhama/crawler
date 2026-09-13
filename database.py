@@ -11,6 +11,14 @@ def init_db(conn):
             )
         ''')
 
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS pages_content_search_idx
+            ON pages
+            USING GIN (
+                to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(content, ''))
+            )
+        ''')
+
 def save_page(conn, url, title, content, status_code):
     with conn.cursor() as cur:
         cur.execute('''
@@ -31,3 +39,8 @@ def search_pages(conn, query):
         ''', (f'%{query}%', f'%{query}%'))
 
         return cur.fetchall()
+
+def clear_db(conn):
+    with conn.cursor() as cur:
+        cur.execute('DELETE FROM pages')
+        conn.commit()

@@ -1,54 +1,36 @@
-from collections import deque
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+import argparse
 import psycopg
 
-from database import init_db, save_page, search_pages
+from database import init_db, clear_db
+from crawler import crawl
+from search import search_pages
+
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('command', choices=['crawl', 'search', 'clear'])
+
+    args = parser.parse_args()
+
     with psycopg.connect(
         'dbname=crawler user=crawler password=crawler_password host=localhost port=5432'
     ) as conn:
         init_db(conn)
 
-        queue = deque()
-        visited = set()
-        max_pages = 10
+        if args.command == 'crawl':
+            start_url = input('Enter start site: ').strip()
+            max_pages = int(input('Maximum pages to crawl: '))
 
-        # start = input('Enter start site: ').strip()
-        start = 'https://www.google.com/'
-        queue.append(start)
+            crawl(conn, start_url, max_pages)
 
-        i = 0
-        while queue and i < max_pages:
-            url = queue.popleft()
-            if url in visited:
-                continue
+        elif args.command == 'search':
+            query = input('Enter search query: ').strip()
+            results = search_pages(conn, query)
 
-            try:
-                response = requests.get(url, timeout=5)
-            except requests.RequestException:
-                continue
+            for url, title, score in results:
+                print(f'{title} ({url}) - score: {score}')
 
-            final_url = response.url
-            if final_url in visited:
-                continue
-
-            soup = BeautifulSoup(response.content, 'html.parser')
-            title = soup.title.text if soup.title else ''
-            content = soup.get_text(' ', strip=True)
-            save_page(conn, final_url, title, content, response.status_code)
-            visited.add(final_url)
-            i += 1
-
-            for tag in soup.find_all('a', href=True):
-                href = tag['href']
-                new_url = urljoin(final_url, href)
-                queue.append(new_url)
-
-        results = search_pages(conn, 'account')
-        for url, title in results:
-            print(title, url)
+        elif args.command == 'clear':
+            clear_db(conn)
 
 if __name__ == '__main__':
     main()
