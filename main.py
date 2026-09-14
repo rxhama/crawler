@@ -3,6 +3,7 @@ import psycopg
 
 from database import init_db, clear_db
 from crawler import crawl
+from pagerank import save_pageranks
 from search import search_pages
 
 def main():
@@ -21,6 +22,7 @@ def main():
             max_pages = int(input('Maximum pages to crawl: '))
 
             crawl(conn, start_url, max_pages)
+            save_pageranks(conn)
 
         elif args.command == 'search':
             query = input('Enter search query: ').strip()

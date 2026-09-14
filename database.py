@@ -7,15 +7,10 @@ def init_db(conn):
                 title TEXT,
                 content TEXT,
                 status_code INTEGER,
-                crawled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
+                crawled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                pagerank DOUBLE PRECISION DEFAULT 0,
 
-        cur.execute('''
-            CREATE INDEX IF NOT EXISTS pages_search_idx
-            ON pages
-            USING GIN (
-                (
+                search_vector TSVECTOR GENERATED ALWAYS AS (
                     setweight(
                         to_tsvector('english', COALESCE(title, '')),
                         'A'
@@ -25,8 +20,14 @@ def init_db(conn):
                         to_tsvector('english', COALESCE(content, '')),
                         'B'
                     )
-                )
+                ) STORED
             )
+        ''')
+
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS pages_search_idx
+            ON pages
+            USING GIN (search_vector)
         ''')
 
         cur.execute('''
@@ -45,8 +46,6 @@ def save_page(conn, url, title, content, status_code):
             VALUES (%s, %s, %s, %s)
             ON CONFLICT (url) DO NOTHING
         ''', (url, title, content, status_code))
-
-        conn.commit()
 
 def clear_db(conn):
     with conn.cursor() as cur:

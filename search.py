@@ -4,32 +4,13 @@ def search_pages(conn, query):
             SELECT
                 url,
                 title,
-                ts_rank(
-                    setweight(
-                        to_tsvector('english', COALESCE(title, '')),
-                        'A'
-                    )
-                    ||
-                    setweight(
-                        to_tsvector('english', COALESCE(content, '')),
-                        'B'
-                    ),
-                    plainto_tsquery('english', %s)
+                ts_rank_cd(
+                    search_vector,
+                    plainto_tsquery('english', %s),
+                    2
                 ) AS score
             FROM pages
-            WHERE
-                (
-                    setweight(
-                        to_tsvector('english', COALESCE(title, '')),
-                        'A'
-                    )
-                    ||
-                    setweight(
-                        to_tsvector('english', COALESCE(content, '')),
-                        'B'
-                    )
-                )
-                @@ plainto_tsquery('english', %s)
+            WHERE search_vector @@ plainto_tsquery('english', %s)
             ORDER BY score DESC
         ''', (query, query))
 

@@ -51,6 +51,10 @@ def crawl(conn, start_url, max_pages):
         if source_url is not None:
             save_link(conn, source_url, final_url)
 
+        # Ensures 'pages' and 'links' tables are synced and prevents
+        # loss of progress if crawler functions terminates early
+        conn.commit()
+
         visited.add(final_url)
         pages_crawled += 1
 
