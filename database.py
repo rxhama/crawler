@@ -33,9 +33,9 @@ def init_db(conn):
         cur.execute('''
             CREATE TABLE IF NOT EXISTS links (
                 id SERIAL PRIMARY KEY,
-                source_url TEXT NOT NULL REFERENCES pages(url) ON DELETE CASCADE,
-                target_url TEXT NOT NULL REFERENCES pages(url) ON DELETE CASCADE,
-                UNIQUE (source_url, target_url)
+                source_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+                target_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+                UNIQUE (source_id, target_id)
             )
         ''')
 
@@ -45,17 +45,25 @@ def save_page(conn, url, title, content, status_code):
             INSERT INTO pages (url, title, content, status_code)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT (url) DO NOTHING
+            RETURNING id
         ''', (url, title, content, status_code))
+
+        row = cur.fetchone()
+        if row is not None:
+            return row[0]
+
+        cur.execute('SELECT id FROM pages WHERE url = %s', (url))
+        return cur.fetchone()[0]
 
 def clear_db(conn):
     with conn.cursor() as cur:
         cur.execute('DELETE FROM links')
         cur.execute('DELETE FROM pages')
 
-def save_link(conn, source_url, target_url):
+def save_link(conn, source_id, target_id):
     with conn.cursor() as cur:
         cur.execute('''
-            INSERT INTO links (source_url, target_url)
+            INSERT INTO links (source_id, target_id)
             VALUES (%s, %s)
-            ON CONFLICT (source_url, target_url) DO NOTHING
-        ''', (source_url, target_url))
+            ON CONFLICT (source_id, target_id) DO NOTHING
+        ''', (source_id, target_id))

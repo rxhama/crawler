@@ -1,65 +1,122 @@
 from collections import deque
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urldefrag
+from urllib.parse import urljoin, urldefrag, urlsplit
 
 from database import save_page, save_link
 
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024 # 5 MB
+SKIP_EXTENSIONS = {'.tgz', '.tar.xz', '.tar.gz', '.zip', '.pdf', '.whl', '.exe', '.dmg'}
 
-def crawl(conn, start_url, max_pages):
+def skip_url(url):
+    parsed = urlsplit(url)
+
+    if parsed.scheme not in ('http', 'https'):
+        return True
+
+    path = parsed.path.lower()
+    if any(path.endswith(ext) for ext in SKIP_EXTENSIONS):
+        return True
+
+    return False
+
+
+# Returns True if url was already visited (and link saved if applicable)
+def try_save_link_if_visited(conn, url_to_id, source_id, url):
+    if url not in url_to_id:
+        return False
+    target_id = url_to_id[url]
+    if target_id is not None and source_id is not None:
+        save_link(conn, source_id, target_id)
+    return True
+
+def crawl(conn, start_url, max_pages, commit_every=50):
+    if skip_url(start_url):
+        print(f'Invalid start URL: {start_url}')
+        return
+
     queue = deque([(None, start_url)])
-    visited = set()
+    url_to_id = {}
 
-    pages_crawled = 0
-    while queue and pages_crawled < max_pages:
-        source_url, target_url = queue.popleft()
-        if target_url in visited:
-            continue
+    with requests.Session() as session:
+        pages_crawled = 0
+        while queue and pages_crawled < max_pages:
+            source_id, target_url = queue.popleft()
 
-        try:
-            response = requests.get(target_url, timeout=5)
-        except requests.RequestException:
-            print(f'Failed to reach page: {target_url}')
-            continue
+            if try_save_link_if_visited(conn, url_to_id, source_id, target_url):
+                continue
 
-        final_url = response.url
-        if final_url in visited:
-            continue
+            try:
+                response = session.get(target_url, timeout=5, stream=True)
+            except requests.RequestException:
+                print(f'\nFailed to reach page: {target_url}')
+                url_to_id[target_url] = None
+                continue
 
-        # Skip non-page responses
-        content_type = response.headers.get('Content-Type', '').lower()
-        if not (
-            content_type.startswith('text/html') or
-            content_type.startswith('text/plain')
-        ):
-            print(f'Skipping non-page response ({content_type}): {final_url}')
-            continue
+            final_url = response.url
+            if try_save_link_if_visited(conn, url_to_id, source_id, final_url):
+                response.close()
+                continue
 
-        # tsvector takes maximum of 1048575 bytes
-        if len(response.content) > MAX_RESPONSE_SIZE:
-            print(f'Skipping large response: {final_url}')
-            continue
+            # Skip non-page responses
+            content_type = response.headers.get('Content-Type', '').lower()
+            if not (
+                content_type.startswith('text/html') or
+                content_type.startswith('text/plain')
+            ):
+                print(f'\nSkipping non-page response ({content_type}): {final_url}')
+                url_to_id[final_url] = None
+                response.close()
+                continue
 
+            # Skip early if server tells us size
+            content_length = response.headers.get('Content-Length')
+            if content_length and int(content_length) > MAX_RESPONSE_SIZE:
+                print(f'\nSkipping large response: {final_url}')
+                url_to_id[final_url] = None
+                response.close()
+                continue
 
-        soup = BeautifulSoup(response.content, 'html.parser')
+            try:
+                body = response.content
+            except requests.RequestException:
+                print(f'\nFailed to download body: {final_url}')
+                url_to_id[final_url] = None
+                response.close()
+                continue
 
-        title = soup.title.text.replace('\x00', '') if soup.title else ''
-        content = soup.get_text(' ', strip=True).replace('\x00', '')
+            # tsvector takes maximum of 1048575 bytes
+            if len(body) > MAX_RESPONSE_SIZE:
+                print(f'\nSkipping large response: {final_url}')
+                url_to_id[final_url] = None
+                continue
 
-        save_page(conn, final_url, title, content, response.status_code)
-        if source_url is not None:
-            save_link(conn, source_url, final_url)
+            soup = BeautifulSoup(body, 'html.parser')
+            title = soup.title.text.replace('\x00', '') if soup.title else ''
+            content = soup.get_text(' ', strip=True).replace('\x00', '')
 
-        # Ensures 'pages' and 'links' tables are synced and prevents
-        # loss of progress if crawler functions terminates early
-        conn.commit()
+            page_id = save_page(conn, final_url, title, content, response.status_code)
+            url_to_id[final_url] = page_id
 
-        visited.add(final_url)
-        pages_crawled += 1
+            if source_id is not None:
+                save_link(conn, source_id, page_id)
 
-        for tag in soup.find_all('a', href=True):
-            href = tag['href']
-            new_url = urljoin(final_url, href)
-            new_url, _ = urldefrag(new_url)
-            queue.append((final_url, new_url))
+            pages_crawled += 1
+            # Ensures 'pages' and 'links' tables are synced and prevents
+            # loss of progress if crawler functions terminates early
+            if pages_crawled % commit_every == 0:
+                conn.commit()
+
+            print(f'\rCrawling page {pages_crawled}/{max_pages} ({final_url})'.ljust(120), end='', flush=True)
+
+            for tag in soup.find_all('a', href=True):
+                href = tag['href']
+                new_url = urljoin(final_url, href)
+                new_url, _ = urldefrag(new_url)
+
+                if skip_url(new_url):
+                    continue
+
+                queue.append((page_id, new_url))
+
+    conn.commit() # Commit any remaining uncommitted pages after loop finish
