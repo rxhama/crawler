@@ -61,11 +61,12 @@ def save_page(conn, url, title, content, status_code):
         if row is not None:
             return row[0]
 
-        cur.execute('SELECT id FROM pages WHERE url = %s', (url))
+        cur.execute('SELECT id FROM pages WHERE url = %s', (url,))
         return cur.fetchone()[0]
 
 def clear_db(conn):
     with conn.cursor() as cur:
+        cur.execute('DELETE FROM frontier')
         cur.execute('DELETE FROM links')
         cur.execute('DELETE FROM pages')
 
