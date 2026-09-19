@@ -18,7 +18,7 @@ def main():
         init_db(conn)
 
         if args.command == 'crawl':
-            start_url = input('Enter start site: ').strip()
+            start_url = input('Enter start site (in case frontier is empty): ').strip()
             max_pages = int(input('Maximum pages to crawl: '))
 
             crawl(conn, start_url, max_pages)
