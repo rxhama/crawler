@@ -145,7 +145,7 @@ def crawl(conn, start_url, max_pages, commit_every=50):
                 continue
 
             # Parsing
-            soup = BeautifulSoup(body, 'html.parser')
+            soup = BeautifulSoup(body, 'lxml')
             title = soup.title.text.replace('\x00', '') if soup.title else ''
             content = soup.get_text(' ', strip=True).replace('\x00', '')
 
