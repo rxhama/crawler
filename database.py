@@ -70,6 +70,10 @@ def clear_db(conn):
         cur.execute('DELETE FROM links')
         cur.execute('DELETE FROM pages')
 
+def reset_db(conn):
+    with conn.cursor() as cur:
+        cur.execute('DROP TABLE IF EXISTS frontier, links, pages')
+
 def save_link(conn, source_id, target_id):
     with conn.cursor() as cur:
         cur.execute('''

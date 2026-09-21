@@ -1,14 +1,14 @@
 import argparse
 import psycopg
 
-from database import init_db, clear_db
+from database import init_db, clear_db, reset_db
 from crawler import crawl
 from pagerank import save_pageranks
 from search import search_pages
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=['crawl', 'search', 'clear'])
+    parser.add_argument('command', choices=['crawl', 'search', 'clear', 'reset'])
 
     args = parser.parse_args()
 
@@ -33,6 +33,15 @@ def main():
 
         elif args.command == 'clear':
             clear_db(conn)
+
+        elif args.command == 'reset':
+            ans = input('This will delete and recreate all tables, deleting all crawl data. Are you sure? [Y/n]: ').lower()
+            if ans not in ('y', ''):
+                print('Reset aborted.')
+                return
+            print('DB reset.')
+            reset_db(conn)
+            init_db(conn)
 
 if __name__ == '__main__':
     main()
