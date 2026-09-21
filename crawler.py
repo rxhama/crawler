@@ -30,6 +30,10 @@ def try_save_link_if_visited(conn, url_to_id, source_id, url):
         save_link(conn, source_id, target_id)
     return True
 
+def mark_skipped(reason, url, url_to_id):
+    print(f'\n{reason}: {url}')
+    url_to_id[url] = None
+
 def crawl(conn, start_url, max_pages, commit_every=50):
     if skip_url(start_url):
         print(f'Invalid start URL: {start_url}')
@@ -37,8 +41,8 @@ def crawl(conn, start_url, max_pages, commit_every=50):
 
     url_to_id = load_pages(conn)
     frontier_rows = load_frontier(conn)
-    robots_cache = {}
-    last_request_at = {}
+    robots_cache = {} # domain -> RobotFileParser object
+    last_request_at = {} # domain -> monotonic timstamp
 
     if not frontier_rows and start_url not in url_to_id:
         frontier_id = add_to_frontier(conn, None, start_url)
@@ -54,18 +58,18 @@ def crawl(conn, start_url, max_pages, commit_every=50):
         while queue and pages_crawled < max_pages:
             frontier_id, source_id, target_url = queue.popleft()
 
+            # Every path below is terminal for this row
+            remove_from_frontier(conn, frontier_id)
+
             # Check if URL is visited
             if try_save_link_if_visited(conn, url_to_id, source_id, target_url):
-                remove_from_frontier(conn, frontier_id)
                 continue
 
             # Re-check robots.txt: this row may be the seed URL (never
             # discovery-checked) or resumed from a past run whose robots.txt
             # verdict is stale, since neither is recorded durably.
             if not is_allowed(session, robots_cache, last_request_at, target_url):
-                print(f'\nDisallowed by robots.txt: {target_url}')
-                url_to_id[target_url] = None
-                remove_from_frontier(conn, frontier_id)
+                mark_skipped('Disallowed by robots.txt', target_url, url_to_id)
                 continue
 
             # Wait between requests of the same domain
@@ -76,78 +80,58 @@ def crawl(conn, start_url, max_pages, commit_every=50):
             try:
                 response = session.get(target_url, timeout=5, stream=True)
             except requests.RequestException:
-                print(f'\nFailed to reach page: {target_url}')
-                url_to_id[target_url] = None
-                remove_from_frontier(conn, frontier_id)
+                mark_skipped('Failed to reach page', target_url, url_to_id)
                 continue
 
-            final_url = response.url
-            # Check if final URL is visited
-            if try_save_link_if_visited(conn, url_to_id, source_id, final_url):
-                remove_from_frontier(conn, frontier_id)
-                response.close()
-                continue
+            with response:
+                final_url = response.url
 
-            # Skip non-successful response codes
-            if not response.ok:
-                print(f'\nNon-2xx response ({response.status_code}): {final_url}')
-                url_to_id[final_url] = None
-                remove_from_frontier(conn, frontier_id)
-                response.close()
-                continue
+                # Check if final URL is visited
+                if try_save_link_if_visited(conn, url_to_id, source_id, final_url):
+                    continue
 
-            # final_url was never separately discovery-checked (a redirect
-            # target isn't a discovered link) and can be on a different path
-            # or domain than target_url with different robots.txt rules.
-            if not is_allowed(session, robots_cache, last_request_at, final_url):
-                print(f'\nDisallowed by robots.txt: {final_url}')
-                url_to_id[final_url] = None
-                remove_from_frontier(conn, frontier_id)
-                response.close()
-                continue
+                # Skip non-successful response codes
+                if not response.ok:
+                    mark_skipped(f'Non-2xx response ({response.status_code})', final_url, url_to_id)
+                    continue
 
-            # Skip non-page responses
-            content_type = response.headers.get('Content-Type', '').lower()
-            if not (
-                content_type.startswith('text/html') or
-                content_type.startswith('text/plain')
-            ):
-                print(f'\nSkipping non-page response ({content_type}): {final_url}')
-                url_to_id[final_url] = None
-                remove_from_frontier(conn, frontier_id)
-                response.close()
-                continue
+                # final_url was never separately discovery-checked (a redirect
+                # target isn't a discovered link) and can be on a different path
+                # or domain than target_url with different robots.txt rules.
+                if not is_allowed(session, robots_cache, last_request_at, final_url):
+                    mark_skipped('Disallowed by robots.txt', final_url, url_to_id)
+                    continue
 
-            # Skip early if server tells us size
-            content_length = response.headers.get('Content-Length')
-            if content_length and int(content_length) > MAX_RESPONSE_SIZE:
-                print(f'\nSkipping large response: {final_url}')
-                url_to_id[final_url] = None
-                remove_from_frontier(conn, frontier_id)
-                response.close()
-                continue
+                # Skip non-page responses
+                content_type = response.headers.get('Content-Type', '').lower()
+                if not (
+                    content_type.startswith('text/html') or
+                    content_type.startswith('text/plain')
+                ):
+                    mark_skipped(f'Skipping non-page response ({content_type})', final_url, url_to_id)
+                    continue
 
-            # Downloads the response body
-            try:
-                body = response.content
-            except requests.RequestException:
-                print(f'\nFailed to download body: {final_url}')
-                url_to_id[final_url] = None
-                remove_from_frontier(conn, frontier_id)
-                response.close()
-                continue
+                # Skip early if server tells us size
+                content_length = response.headers.get('Content-Length')
+                if content_length and int(content_length) > MAX_RESPONSE_SIZE:
+                    mark_skipped('Skipping large response', final_url, url_to_id)
+                    continue
 
-            # tsvector takes maximum of 1048575 bytes
+                # Downloads the response body
+                try:
+                    body = response.content
+                except requests.RequestException:
+                    mark_skipped('Failed to download body', final_url, url_to_id)
+                    continue
+
+            # Skip responses with large bodies
+            # (Content-Length given by server was incorrect or omitted)
             if len(body) > MAX_RESPONSE_SIZE:
-                print(f'\nSkipping large response: {final_url}')
-                url_to_id[final_url] = None
-                remove_from_frontier(conn, frontier_id)
+                mark_skipped('Skipping large response', final_url, url_to_id)
                 continue
 
             # Parsing
-            soup = BeautifulSoup(body, 'lxml')
-            title = soup.title.text.replace('\x00', '') if soup.title else ''
-            content = soup.get_text(' ', strip=True).replace('\x00', '')
+            title, content, children = parse_page(body, final_url)
 
             page_id = save_page(conn, final_url, title, content, response.status_code)
             url_to_id[final_url] = page_id
@@ -155,25 +139,17 @@ def crawl(conn, start_url, max_pages, commit_every=50):
             if source_id is not None:
                 save_link(conn, source_id, page_id)
 
-            remove_from_frontier(conn, frontier_id)
-
             pages_crawled += 1
             # Ensures 'pages' and 'links' tables are synced and prevents
             # loss of progress if crawler functions terminates early
             if pages_crawled % commit_every == 0:
+                # TODO: Add batch insert and remove frontier (and links?) instead of doing it every loop iteration
                 conn.commit()
 
             print(f'\rCrawling page {pages_crawled}/{max_pages} ({final_url})'.ljust(120), end='', flush=True)
 
             # Checking "children" links on the page
-            for tag in soup.find_all('a', href=True):
-                href = str(tag['href'])
-                new_url = urljoin(final_url, href)
-                new_url, _ = urldefrag(new_url)
-
-                if skip_url(new_url):
-                    continue
-
+            for new_url in children:
                 # Hygiene filter, not the real gate (see the target_url check
                 # above): keeps known-disallowed URLs out of frontier/DB.
                 # Not durably recorded, so a rejection here isn't final - if
@@ -185,3 +161,25 @@ def crawl(conn, start_url, max_pages, commit_every=50):
                 queue.append((new_frontier_id, page_id, new_url))
 
     conn.commit() # Commit any remaining uncommitted pages after loop finish
+
+def parse_page(html_body, url):
+    '''Returns title, content, and accepted children links
+    (skip_url -> False, robots.txt check happens where the function is called).'''
+    soup = BeautifulSoup(html_body, 'lxml')
+    title = soup.title.text if soup.title else ''
+    content = soup.get_text(' ', strip=True)
+
+    children = []
+    for tag in soup.find_all('a', href=True):
+        href = str(tag['href'])
+        try:
+            new_url = urljoin(url, href)
+            new_url, _ = urldefrag(new_url)
+        except ValueError:
+            continue
+
+        if skip_url(new_url):
+            continue
+        children.append(new_url)
+
+    return title, content, children

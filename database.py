@@ -12,12 +12,12 @@ def init_db(conn):
 
                 search_vector TSVECTOR GENERATED ALWAYS AS (
                     setweight(
-                        to_tsvector('english', COALESCE(title, '')),
+                        to_tsvector('english', left(COALESCE(title, ''), 10000)),
                         'A'
                     )
                     ||
                     setweight(
-                        to_tsvector('english', COALESCE(content, '')),
+                        to_tsvector('english', left(COALESCE(content, ''), 500000)),
                         'B'
                     )
                 ) STORED
