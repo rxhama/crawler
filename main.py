@@ -32,16 +32,19 @@ def main():
                 print(f'{title} ({url}) - score: {score}')
 
         elif args.command == 'clear':
+            if input('This will delete all crawl data. Are you sure? [y/N]: ').lower() != 'y':
+                print('Clear aborted.')
+                return
             clear_db(conn)
+            print('DB cleared.')
 
         elif args.command == 'reset':
-            ans = input('This will delete and recreate all tables, deleting all crawl data. Are you sure? [Y/n]: ').lower()
-            if ans not in ('y', ''):
+            if input('This will delete and recreate all tables, deleting all crawl data. Are you sure? [y/N]: ').lower() != 'y':
                 print('Reset aborted.')
                 return
-            print('DB reset.')
             reset_db(conn)
             init_db(conn)
+            print('DB reset.')
 
 if __name__ == '__main__':
     main()

@@ -42,7 +42,7 @@ def crawl(conn, start_url, max_pages, commit_every=50):
     url_to_id = load_pages(conn)
     frontier_rows = load_frontier(conn)
     robots_cache = {} # domain -> RobotFileParser object
-    last_request_at = {} # domain -> monotonic timstamp
+    last_request_at = {} # domain -> monotonic timestamp
 
     if not frontier_rows and start_url not in url_to_id:
         frontier_id = add_to_frontier(conn, None, start_url)
