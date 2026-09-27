@@ -1,0 +1,4 @@
+# Seed URLs for `python main.py crawl --seeds seeds.txt`, one per line.
+# The crawl stays on these URLs' hosts unless run with --unbounded.
+# Blank lines and lines starting with # are ignored. For example:
+# https://docs.python.org/3/

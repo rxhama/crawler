@@ -3,7 +3,10 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urldefrag, urlsplit
 
-from database import save_page, save_link, load_pages, load_frontier, add_to_frontier, remove_from_frontier
+from database import (
+    save_page, save_link, load_pages, load_frontier, add_to_frontier, remove_from_frontier,
+    load_allowed_hosts, add_allowed_host,
+)
 from politeness import USER_AGENT, is_allowed, wait_if_needed
 
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024 # 5 MB
@@ -21,6 +24,9 @@ def skip_url(url):
 
     return False
 
+def in_scope(url, allowed_hosts, unbounded):
+    return unbounded or urlsplit(url).netloc in allowed_hosts
+
 def try_save_link_if_visited(conn, url_to_id, source_id, url):
     '''Returns True if url was already visited (and link saved if applicable)'''
     if url not in url_to_id:
@@ -34,22 +40,26 @@ def mark_skipped(reason, url, url_to_id):
     print(f'\n{reason}: {url}')
     url_to_id[url] = None
 
-def crawl(conn, start_url, max_pages, commit_every=50):
-    if skip_url(start_url):
-        print(f'Invalid start URL: {start_url}')
-        return
+def seed_frontier(conn, seed_urls):
+    '''Adds seed URLs to the frontier, and their hosts to the crawl scope'''
+    for url in seed_urls:
+        if skip_url(url):
+            print(f'Invalid seed URL: {url}')
+            continue
+        add_allowed_host(conn, urlsplit(url).netloc)
+        add_to_frontier(conn, None, url)
+    conn.commit()
 
+def crawl(conn, max_pages, commit_every=50, unbounded=False):
     url_to_id = load_pages(conn)
-    frontier_rows = load_frontier(conn)
+    allowed_hosts = load_allowed_hosts(conn)
+    queue = deque(load_frontier(conn))
     robots_cache = {} # domain -> RobotFileParser object
     last_request_at = {} # domain -> monotonic timestamp
 
-    if not frontier_rows and start_url not in url_to_id:
-        frontier_id = add_to_frontier(conn, None, start_url)
-        conn.commit()
-        frontier_rows = [(frontier_id, None, start_url)]
-
-    queue = deque(frontier_rows)
+    if not queue:
+        print('Frontier is empty, nothing to crawl (add seed URLs with --seeds).')
+        return
 
     with requests.Session() as session:
         session.headers.update({'User-Agent': USER_AGENT})
@@ -58,6 +68,16 @@ def crawl(conn, start_url, max_pages, commit_every=50):
         while queue and pages_crawled < max_pages:
             frontier_id, source_id, target_url = queue.popleft()
 
+            # Out of scope means "not this run", not "never": the row is left
+            # in frontier (and out of url_to_id) for a later --unbounded run.
+            # Exempt if target_url is already crawled, since saving the link
+            # to it needs no request.
+            if (
+                url_to_id.get(target_url) is None and
+                not in_scope(target_url, allowed_hosts, unbounded)
+            ):
+                continue
+
             # Every path below is terminal for this row
             remove_from_frontier(conn, frontier_id)
 
@@ -65,9 +85,10 @@ def crawl(conn, start_url, max_pages, commit_every=50):
             if try_save_link_if_visited(conn, url_to_id, source_id, target_url):
                 continue
 
-            # Re-check robots.txt: this row may be the seed URL (never
-            # discovery-checked) or resumed from a past run whose robots.txt
-            # verdict is stale, since neither is recorded durably.
+            # Re-check robots.txt: this row may be a seed URL or a link found
+            # out of scope (neither is discovery-checked), or resumed from a
+            # past run whose robots.txt verdict is stale, since discovery
+            # checks aren't recorded durably.
             if not is_allowed(session, robots_cache, last_request_at, target_url):
                 mark_skipped('Disallowed by robots.txt', target_url, url_to_id)
                 continue
@@ -86,13 +107,28 @@ def crawl(conn, start_url, max_pages, commit_every=50):
             with response:
                 final_url = response.url
 
-                # Check if final URL is visited
+                # A seed's final host joins the scope even if it redirected off
+                # the seed's own host (e.g. python.org -> www.python.org),
+                # otherwise every link on the page would be out of scope
+                if source_id is None:
+                    final_host = urlsplit(final_url).netloc
+                    add_allowed_host(conn, final_host)
+                    allowed_hosts.add(final_host)
+
+                # Check if final URL is visited. If so, target_url redirected
+                # there: point it at the same entry, so it isn't fetched again.
                 if try_save_link_if_visited(conn, url_to_id, source_id, final_url):
+                    url_to_id[target_url] = url_to_id[final_url]
                     continue
 
                 # Skip non-successful response codes
                 if not response.ok:
                     mark_skipped(f'Non-2xx response ({response.status_code})', final_url, url_to_id)
+                    continue
+
+                # Any other redirect can leave the crawl's scope
+                if not in_scope(final_url, allowed_hosts, unbounded):
+                    mark_skipped('Redirected out of scope', final_url, url_to_id)
                     continue
 
                 # final_url was never separately discovery-checked (a redirect
@@ -136,6 +172,9 @@ def crawl(conn, start_url, max_pages, commit_every=50):
             page_id = save_page(conn, final_url, title, content, response.status_code)
             url_to_id[final_url] = page_id
 
+            if target_url != final_url:
+                url_to_id[target_url] = page_id
+
             if source_id is not None:
                 save_link(conn, source_id, page_id)
 
@@ -154,7 +193,13 @@ def crawl(conn, start_url, max_pages, commit_every=50):
                 # above): keeps known-disallowed URLs out of frontier/DB.
                 # Not durably recorded, so a rejection here isn't final - if
                 # rediscovered later via another page, it's re-evaluated fresh.
-                if not is_allowed(session, robots_cache, last_request_at, new_url):
+                # Out-of-scope links skip this check and are always recorded:
+                # they aren't fetched this run, and checking them would fetch
+                # robots.txt from every host linked to.
+                if (
+                    in_scope(new_url, allowed_hosts, unbounded) and
+                    not is_allowed(session, robots_cache, last_request_at, new_url)
+                ):
                     continue
 
                 new_frontier_id = add_to_frontier(conn, page_id, new_url)

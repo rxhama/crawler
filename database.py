@@ -44,7 +44,13 @@ def init_db(conn):
                 id SERIAL PRIMARY KEY,
                 source_id INTEGER REFERENCES pages(id) ON DELETE CASCADE,
                 url TEXT NOT NULL,
-                UNIQUE (source_id, url)
+                UNIQUE NULLS NOT DISTINCT (source_id, url)
+            )
+        ''')
+
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS allowed_hosts (
+                host TEXT PRIMARY KEY
             )
         ''')
 
@@ -69,10 +75,11 @@ def clear_db(conn):
         cur.execute('DELETE FROM frontier')
         cur.execute('DELETE FROM links')
         cur.execute('DELETE FROM pages')
+        cur.execute('DELETE FROM allowed_hosts')
 
 def reset_db(conn):
     with conn.cursor() as cur:
-        cur.execute('DROP TABLE IF EXISTS frontier, links, pages')
+        cur.execute('DROP TABLE IF EXISTS frontier, links, pages, allowed_hosts')
 
 def save_link(conn, source_id, target_id):
     with conn.cursor() as cur:
@@ -115,3 +122,16 @@ def add_to_frontier(conn, source_id, url):
 def remove_from_frontier(conn, frontier_id):
     with conn.cursor() as cur:
         cur.execute('DELETE FROM frontier WHERE id = %s', (frontier_id,))
+
+def load_allowed_hosts(conn):
+    with conn.cursor() as cur:
+        cur.execute('SELECT host FROM allowed_hosts')
+        return {host for (host,) in cur.fetchall()}
+
+def add_allowed_host(conn, host):
+    with conn.cursor() as cur:
+        cur.execute('''
+            INSERT INTO allowed_hosts (host)
+            VALUES (%s)
+            ON CONFLICT (host) DO NOTHING
+        ''', (host,))

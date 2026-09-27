@@ -2,13 +2,15 @@ import argparse
 import psycopg
 
 from database import init_db, clear_db, reset_db
-from crawler import crawl
+from crawler import crawl, seed_frontier
 from pagerank import save_pageranks
 from search import search_pages
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('command', choices=['crawl', 'search', 'clear', 'reset'])
+    parser.add_argument('--seeds', metavar='FILE', help='crawl: add the URLs in FILE (one per line, # for comments) to the frontier first')
+    parser.add_argument('--unbounded', action='store_true', help='crawl: follow links to any host, not just seed hosts')
 
     args = parser.parse_args()
 
@@ -18,10 +20,14 @@ def main():
         init_db(conn)
 
         if args.command == 'crawl':
-            start_url = input('Enter start site (in case frontier is empty): ').strip()
+            if args.seeds:
+                with open(args.seeds) as f:
+                    lines = [line.strip() for line in f]
+                # One URL per line; blank lines and # comments are skipped
+                seed_frontier(conn, [line for line in lines if line and not line.startswith('#')])
             max_pages = int(input('Maximum pages to crawl: '))
 
-            crawl(conn, start_url, max_pages)
+            crawl(conn, max_pages, unbounded=args.unbounded)
             save_pageranks(conn)
 
         elif args.command == 'search':
