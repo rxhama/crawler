@@ -1,11 +1,12 @@
 from collections import deque
+import hashlib
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urldefrag, urlsplit
 
 from database import (
-    save_page, save_link, load_pages, load_frontier, add_to_frontier, remove_from_frontier,
-    load_allowed_hosts, add_allowed_host,
+    save_page, save_link, load_pages, load_content_hashes, load_frontier, add_to_frontier,
+    remove_from_frontier, load_allowed_hosts, add_allowed_host,
 )
 from politeness import USER_AGENT, is_allowed, wait_if_needed
 
@@ -32,13 +33,24 @@ def try_save_link_if_visited(conn, url_to_id, source_id, url):
     if url not in url_to_id:
         return False
     target_id = url_to_id[url]
-    if target_id is not None and source_id is not None:
+    if (
+        target_id is not None and
+        source_id is not None and
+        source_id != target_id
+    ):
         save_link(conn, source_id, target_id)
     return True
 
 def mark_skipped(reason, url, url_to_id):
     print(f'\n{reason}: {url}')
     url_to_id[url] = None
+
+def hash_content(title, content):
+    '''Fingerprint of a page's indexed text, for spotting the same page served
+    under several URLs. None for a page with no text, since those would all match.'''
+    if not content:
+        return None
+    return hashlib.sha256(f'{title}\n{content}'.encode()).hexdigest()
 
 def seed_frontier(conn, seed_urls):
     '''Adds seed URLs to the frontier, and their hosts to the crawl scope'''
@@ -52,6 +64,7 @@ def seed_frontier(conn, seed_urls):
 
 def crawl(conn, max_pages, commit_every=50, unbounded=False):
     url_to_id = load_pages(conn)
+    hash_to_id = load_content_hashes(conn)
     allowed_hosts = load_allowed_hosts(conn)
     queue = deque(load_frontier(conn))
     robots_cache = {} # domain -> RobotFileParser object
@@ -169,8 +182,22 @@ def crawl(conn, max_pages, commit_every=50, unbounded=False):
             # Parsing
             title, content, children = parse_page(body, final_url)
 
-            page_id = save_page(conn, final_url, title, content, response.status_code)
+            # Same text as a page already saved under another URL (e.g. /3/ and
+            # /3.14/ on docs.python.org): treat it like a redirect to that page,
+            # so the link to it still counts and its other URLs resolve without
+            # a request. Its own links aren't followed, since the saved copy has
+            # the same ones - that also stops a duplicate tree from spreading.
+            content_hash = hash_content(title, content)
+            if content_hash in hash_to_id:
+                url_to_id[target_url] = url_to_id[final_url] = hash_to_id[content_hash]
+                try_save_link_if_visited(conn, url_to_id, source_id, final_url)
+                print(f'\nDuplicate of an already-crawled page: {final_url}')
+                continue
+
+            page_id = save_page(conn, final_url, title, content, response.status_code, content_hash)
             url_to_id[final_url] = page_id
+            if content_hash is not None:
+                hash_to_id[content_hash] = page_id
 
             if target_url != final_url:
                 url_to_id[target_url] = page_id

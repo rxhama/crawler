@@ -9,6 +9,7 @@ def init_db(conn):
                 status_code INTEGER,
                 crawled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 pagerank DOUBLE PRECISION DEFAULT 0,
+                content_hash TEXT,
 
                 search_vector TSVECTOR GENERATED ALWAYS AS (
                     setweight(
@@ -54,14 +55,14 @@ def init_db(conn):
             )
         ''')
 
-def save_page(conn, url, title, content, status_code):
+def save_page(conn, url, title, content, status_code, content_hash):
     with conn.cursor() as cur:
         cur.execute('''
-            INSERT INTO pages (url, title, content, status_code)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO pages (url, title, content, status_code, content_hash)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (url) DO NOTHING
             RETURNING id
-        ''', (url, title, content, status_code))
+        ''', (url, title, content, status_code, content_hash))
 
         row = cur.fetchone()
         if row is not None:
@@ -93,6 +94,12 @@ def load_pages(conn):
     '''url -> id for every page already crawled'''
     with conn.cursor() as cur:
         cur.execute('SELECT url, id FROM pages')
+        return dict(cur.fetchall())
+
+def load_content_hashes(conn):
+    '''content_hash -> id for every crawled page that has one'''
+    with conn.cursor() as cur:
+        cur.execute('SELECT content_hash, id FROM pages WHERE content_hash IS NOT NULL')
         return dict(cur.fetchall())
 
 def load_frontier(conn):
