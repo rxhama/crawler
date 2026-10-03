@@ -254,4 +254,4 @@ def parse_page(html_body, url):
             continue
         children.append(new_url)
 
-    return title, content, children
+    return title, content, list(dict.fromkeys(children))
