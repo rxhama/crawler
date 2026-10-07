@@ -2,3 +2,5 @@
 # The crawl stays on these URLs' hosts unless run with --unbounded.
 # Blank lines and lines starting with # are ignored. For example:
 # https://docs.python.org/3/
+https://docs.python.org/3/
+https://en.wikipedia.org/
