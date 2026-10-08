@@ -5,7 +5,7 @@ from urllib.parse import urljoin, urldefrag, urlsplit
 
 import httpx2
 import psycopg
-from bs4 import BeautifulSoup
+from selectolax.lexbor import LexborHTMLParser
 
 from database import (
     save_page, save_link, load_pages, load_content_hashes, load_frontier, add_to_frontier,
@@ -16,6 +16,7 @@ from scheduler import Scheduler
 
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024 # 5 MB
 SKIP_EXTENSIONS = {'.tgz', '.tar.xz', '.tar.gz', '.tar.bz2', '.zip', '.pdf', '.whl', '.exe', '.dmg', '.epub'}
+NON_CONTENT_TAGS = ['script', 'style', 'noscript', 'template']
 
 @dataclass
 class CrawlState:
@@ -304,21 +305,35 @@ def seed_frontier(conn, seed_urls):
 def parse_page(html_body, url):
     '''Returns title, content, and accepted children links
     (skip_url -> False, robots.txt check happens where the function is called).'''
-    soup = BeautifulSoup(html_body, 'lxml')
-    title = soup.title.text if soup.title else ''
-    content = soup.get_text(' ', strip=True)
+    # encoding=True: read the encoding from the page (<meta charset> etc.) instead of assuming UTF-8
+    tree = LexborHTMLParser(html_body, encoding=True)
 
+    title_node = tree.css_first('title')
+    title = ' '.join(title_node.text().split()) if title_node else ''
+
+    # Deduplicate the raw hrefs first: pages repeat links (navigation, indexes), and the
+    # urljoin/urldefrag/skip_url work below costs more than the parse itself now does
     children = []
-    for tag in soup.find_all('a', href=True):
-        href = str(tag['href'])
+    for href in dict.fromkeys(node.attributes.get('href') for node in tree.css('a[href]')):
+        href = (href or '').strip()
+        # An empty href is a link to the page itself.
+        # Href starting with # is fragment of same page.
+        if not href or href.startswith('#'):
+            continue
+
         try:
             new_url = urljoin(url, href)
             new_url, _ = urldefrag(new_url)
         except ValueError:
             continue
-
+        
         if skip_url(new_url):
             continue
         children.append(new_url)
+
+    # Page text for search: body only (the title has its own column), without
+    # script/style/noscript/template contents, w`hitespace collapsed to single spaces
+    tree.strip_tags(NON_CONTENT_TAGS)
+    content = ' '.join(tree.body.text(separator=' ').split()) if tree.body else ''
 
     return title, content, list(dict.fromkeys(children))
