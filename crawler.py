@@ -17,6 +17,7 @@ from scheduler import Scheduler
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024 # 5 MB
 SKIP_EXTENSIONS = {'.tgz', '.tar.xz', '.tar.gz', '.tar.bz2', '.zip', '.pdf', '.whl', '.exe', '.dmg', '.epub'}
 NON_CONTENT_TAGS = ['script', 'style', 'noscript', 'template']
+LANGUAGES = {'en'} # only pages in these languages are crawled (see other_language)
 
 @dataclass
 class CrawlState:
@@ -175,6 +176,12 @@ async def fetch_page(state, domain, source_id, url):
                 mark_skipped(f'Skipping non-page response ({content_type})', final_url, state.url_to_id)
                 return None
 
+            # Page says it's in another language: skip it before downloading the body
+            content_language = response.headers.get('Content-Language')
+            if other_language(content_language):
+                mark_skipped(f'Page in another language ({content_language})', final_url, state.url_to_id)
+                return None
+
             # Skip early if server tells us size
             content_length = response.headers.get('Content-Length')
             if content_length and int(content_length) > MAX_RESPONSE_SIZE:
@@ -203,7 +210,13 @@ def record_page(state, source_id, url, final_url, status_code, body):
     '''Parses and saves a fetched page, and queues its links.
     A plain def, not async: no other worker can run between save_page and
     writing the page's links and frontier rows, so they always end up in the same commit.'''
-    title, content, children = parse_page(body, final_url)
+    title, content, children, lang = parse_page(body, final_url)
+
+    # Page says it's in another language (<html lang>, for sites that don't send
+    # Content-Language): not saved, and its links aren't followed
+    if other_language(lang):
+        mark_skipped(f'Page in another language ({lang})', final_url, state.url_to_id)
+        return
 
     # Same text as a page already saved under another URL (e.g. /3/ and
     # /3.14/ on docs.python.org): treat it like a redirect to that page,
@@ -279,6 +292,15 @@ def skip_url(url):
 
     return False
 
+def other_language(tag):
+    '''True if a language tag ("lt", "en-GB", or a Content-Language list like "en, fr")
+    names only languages outside LANGUAGES. A missing or empty tag counts as allowed,
+    since most links and many pages don't declare one. Locale-style tags like "en_US"
+    aren't valid BCP 47, but some sites use them, so "_" counts as "-".'''
+    tags = [t.strip().replace('_', '-').split('-')[0].lower() for t in (tag or '').split(',') if t.strip()]
+    tags = [t for t in tags if t != 'x'] # private-use values like "x-default" aren't languages
+    return bool(tags) and not any(t in LANGUAGES for t in tags)
+
 def try_save_link_if_visited(conn, url_to_id, source_id, url):
     '''Returns True if url was already visited (and link saved if applicable)'''
     if url not in url_to_id:
@@ -314,18 +336,25 @@ def seed_frontier(conn, seed_urls):
     conn.commit()
 
 def parse_page(html_body, url):
-    '''Returns title, content, and accepted children links
-    (skip_url -> False, robots.txt check happens where the function is called).'''
+    '''Returns title, content, accepted children links (skip_url -> False, robots.txt
+    check happens where the function is called), and the page's declared language.'''
     # encoding=True: read the encoding from the page (<meta charset> etc.) instead of assuming UTF-8
     tree = LexborHTMLParser(html_body, encoding=True)
 
     title_node = tree.css_first('title')
     title = ' '.join(title_node.text().split()) if title_node else ''
 
+    # Links that say they lead to a page in another language (hreflang) are dropped
+    # before any other work, e.g. Wikipedia's links to its other-language editions
+    hrefs = (
+        node.attributes.get('href') for node in tree.css('a[href]')
+        if not other_language(node.attributes.get('hreflang'))
+    )
+
     # Deduplicate the raw hrefs first: pages repeat links (navigation, indexes), and the
     # urljoin/urldefrag/skip_url work below costs more than the parse itself now does
     children = []
-    for href in dict.fromkeys(node.attributes.get('href') for node in tree.css('a[href]')):
+    for href in dict.fromkeys(hrefs):
         href = (href or '').strip()
         # An empty href is a link to the page itself.
         # Href starting with # is fragment of same page.
@@ -347,4 +376,10 @@ def parse_page(html_body, url):
     tree.strip_tags(NON_CONTENT_TAGS)
     content = ' '.join(tree.body.text(separator=' ').split()) if tree.body else ''
 
-    return title, content, list(dict.fromkeys(children))
+    # The language this page says it's written in, from <html lang="...">. Unlike
+    # hreflang above, which is about the pages links point to, this is about this
+    # page itself. It's only read here: record_page decides whether to skip the page
+    html_node = tree.css_first('html')
+    lang = html_node.attributes.get('lang') if html_node else None
+
+    return title, content, list(dict.fromkeys(children)), lang
