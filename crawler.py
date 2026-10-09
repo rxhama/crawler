@@ -8,7 +8,7 @@ import psycopg
 from selectolax.lexbor import LexborHTMLParser
 
 from database import (
-    save_page, save_link, load_pages, load_content_hashes, load_frontier, add_to_frontier,
+    save_page, save_link, save_links, load_pages, load_content_hashes, load_frontier, add_to_frontier, add_children_to_frontier,
     remove_from_frontier, load_allowed_hosts, add_allowed_host,
 )
 from politeness import USER_AGENT, fetch_robots, is_allowed, crawl_delay
@@ -201,8 +201,8 @@ async def fetch_page(state, domain, source_id, url):
 
 def record_page(state, source_id, url, final_url, status_code, body):
     '''Parses and saves a fetched page, and queues its links.
-    A plain def, not async: no other worker can run between save_page
-    and the children's add_to_frontier, so they always end up in the same commit.'''
+    A plain def, not async: no other worker can run between save_page and
+    writing the page's links and frontier rows, so they always end up in the same commit.'''
     title, content, children = parse_page(body, final_url)
 
     # Same text as a page already saved under another URL (e.g. /3/ and
@@ -225,15 +225,18 @@ def record_page(state, source_id, url, final_url, status_code, body):
     if url != final_url:
         state.url_to_id[url] = page_id
 
-    if source_id is not None:
-        save_link(state.conn, source_id, page_id)
-
+    # The page's links and new frontier rows are collected here, then written
+    # with one statement each below instead of one round trip per link
+    links = [(source_id, page_id)] if source_id is not None else []
+    new_children = []
     for child in children:
-        # Already crawled: save the link now, no frontier row needed.
+        # Already crawled: link to it (unless it's this page), no frontier row needed.
         # Only a real id counts: a child skipped this run (None) still gets
         # a row, so an out-of-scope one stays in frontier for a later unbounded run.
-        if state.url_to_id.get(child) is not None:
-            try_save_link_if_visited(state.conn, state.url_to_id, page_id, child)
+        child_id = state.url_to_id.get(child)
+        if child_id is not None:
+            if child_id != page_id:
+                links.append((page_id, child_id))
             continue
 
         # Hygiene filter, not the real gate (that's in process_url):
@@ -243,13 +246,21 @@ def record_page(state, source_id, url, final_url, status_code, body):
         if not is_allowed(state.robots_cache, child):
             continue
 
-        frontier_id = add_to_frontier(state.conn, page_id, child)
-        state.scheduler.add((frontier_id, page_id, child))
+        new_children.append(child)
+
+    save_links(state.conn, links)
+    # Unlike links, these need their ids back as the scheduler's rows carry them.
+    # A child missing from frontier_ids already had a row, queued by another worker
+    # that recorded this same page (see add_children_to_frontier)
+    frontier_ids = add_children_to_frontier(state.conn, page_id, new_children)
+    for child in new_children:
+        if child in frontier_ids:
+            state.scheduler.add((frontier_ids[child], page_id, child))
 
     state.pages_crawled += 1
-    # After the children loop, so a commit never splits a page from its links
+    # After the links and frontier rows, so a commit never splits a page from them
     if state.pages_crawled % state.commit_every == 0:
-        # TODO: batch frontier inserts/removals instead of one round trip each
+        # TODO: hold back links and frontier removals, and write them here in bulk
         state.conn.commit()
     if state.pages_crawled >= state.max_pages:
         state.scheduler.stop()
@@ -332,7 +343,7 @@ def parse_page(html_body, url):
         children.append(new_url)
 
     # Page text for search: body only (the title has its own column), without
-    # script/style/noscript/template contents, w`hitespace collapsed to single spaces
+    # script/style/noscript/template contents, whitespace collapsed to single spaces
     tree.strip_tags(NON_CONTENT_TAGS)
     content = ' '.join(tree.body.text(separator=' ').split()) if tree.body else ''
 

@@ -72,7 +72,7 @@ def main():
                 return
             reset_db(conn)
             init_db(conn)
-            print('DB reset.')
+            print('DB reset and re-initialised.')
 
 if __name__ == '__main__':
     main()
