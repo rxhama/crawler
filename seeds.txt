@@ -2,5 +2,29 @@
 # The crawl stays on these URLs' hosts unless run with --unbounded.
 # Blank lines and lines starting with # are ignored. For example:
 # https://docs.python.org/3/
+
+https://developer.mozilla.org/
 https://docs.python.org/3/
+https://www.postgresql.org/docs/
+https://docs.docker.com/
 https://en.wikipedia.org/
+https://spring.io/guides
+https://go.dev/doc/
+https://doc.rust-lang.org/
+https://git-scm.com/docs
+https://nodejs.org/docs/latest/api/
+https://sqlite.org/docs.html
+https://man7.org/linux/man-pages/
+https://kubernetes.io/docs/
+https://redis.io/docs/
+https://wiki.archlinux.org/
+https://github.blog/
+https://lwn.net/
+https://www.phoronix.com/
+https://dev.to/
+https://blog.rust-lang.org/
+https://www.typescriptlang.org/docs/
+https://fastapi.tiangolo.com/
+https://docs.djangoproject.com/
+https://nginx.org/en/docs/
+https://www.nasa.gov/news/all-news/
