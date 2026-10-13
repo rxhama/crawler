@@ -1,36 +1,60 @@
 import asyncio
 import hashlib
 from dataclasses import dataclass
-from urllib.parse import urljoin, urldefrag, urlsplit
+from urllib.parse import urldefrag, urljoin, urlsplit
+from urllib.robotparser import RobotFileParser
 
 import httpx2
 import psycopg
 from selectolax.lexbor import LexborHTMLParser
 
 from database import (
-    save_page, save_link, save_links, load_pages, load_content_hashes, load_frontier, add_to_frontier, add_children_to_frontier,
-    remove_from_frontier, load_allowed_hosts, add_allowed_host,
+    add_allowed_host,
+    add_children_to_frontier,
+    add_to_frontier,
+    load_allowed_hosts,
+    load_content_hashes,
+    load_frontier,
+    load_pages,
+    remove_from_frontier,
+    save_link,
+    save_links,
+    save_page,
 )
-from politeness import USER_AGENT, fetch_robots, is_allowed, crawl_delay
+from politeness import USER_AGENT, crawl_delay, fetch_robots, is_allowed
 from scheduler import Scheduler
 
-MAX_RESPONSE_SIZE = 5 * 1024 * 1024 # 5 MB
-SKIP_EXTENSIONS = {'.tgz', '.tar.xz', '.tar.gz', '.tar.bz2', '.zip', '.pdf', '.whl', '.exe', '.dmg', '.epub'}
+MAX_RESPONSE_SIZE = 5 * 1024 * 1024  # 5 MB
+SKIP_EXTENSIONS = {
+    '.tgz',
+    '.tar.xz',
+    '.tar.gz',
+    '.tar.bz2',
+    '.zip',
+    '.pdf',
+    '.whl',
+    '.exe',
+    '.dmg',
+    '.epub',
+}
 NON_CONTENT_TAGS = ['script', 'style', 'noscript', 'template']
-LANGUAGES = {'en'} # only pages in these languages are crawled (see other_language)
+LANGUAGES = {'en'}  # only pages in these languages are crawled (see other_language)
+
 
 @dataclass
 class CrawlState:
-    '''Everything the workers share. One per crawl.'''
+    """Everything the workers share. One per crawl."""
+
     conn: psycopg.Connection
     client: httpx2.AsyncClient
     scheduler: Scheduler
-    robots_cache: dict # domain -> RobotFileParser | None
-    url_to_id: dict
-    hash_to_id: dict
+    robots_cache: dict[str, RobotFileParser | None]
+    url_to_id: dict[str, int]
+    hash_to_id: dict[str, int]
     max_pages: int
     commit_every: int
     pages_crawled: int = 0
+
 
 async def crawl(conn, max_pages, commit_every=50, unbounded=False, workers=10):
     url_to_id = load_pages(conn)
@@ -54,11 +78,18 @@ async def crawl(conn, max_pages, commit_every=50, unbounded=False, workers=10):
 
     try:
         async with httpx2.AsyncClient(
-            headers={'User-Agent': USER_AGENT},
-            follow_redirects=True,
-            timeout=5
+            headers={'User-Agent': USER_AGENT}, follow_redirects=True, timeout=5
         ) as client:
-            state = CrawlState(conn, client, scheduler, {}, url_to_id, hash_to_id, max_pages, commit_every)
+            state = CrawlState(
+                conn,
+                client,
+                scheduler,
+                {},
+                url_to_id,
+                hash_to_id,
+                max_pages,
+                commit_every,
+            )
             async with asyncio.TaskGroup() as tg:
                 for _ in range(workers):
                     tg.create_task(crawl_worker(state))
@@ -69,7 +100,8 @@ async def crawl(conn, max_pages, commit_every=50, unbounded=False, workers=10):
         conn.commit()
         raise
 
-    conn.commit() # Commit any remaining uncommitted pages after the workers finish
+    conn.commit()  # Commit any remaining uncommitted pages after the workers finish
+
 
 async def crawl_worker(state):
     while (job := await state.scheduler.next()) is not None:
@@ -84,13 +116,15 @@ async def crawl_worker(state):
             # comes back into line, and the crawl can never tell it's finished
             state.scheduler.release(domain)
 
+
 async def robots_job(state, domain, row):
-    '''Fetches domain's robots.txt before any of its pages. row is the domain's
-    first row, only peeked at for its scheme. It stays queued for its page job.'''
+    """Fetches domain's robots.txt before any of its pages. row is the domain's
+    first row, only peeked at for its scheme. It stays queued for its page job."""
     state.scheduler.record_request(domain)
     rp = await fetch_robots(state.client, row[2])
     state.robots_cache[domain] = rp
     state.scheduler.set_delay(domain, crawl_delay(rp))
+
 
 async def page_job(state, domain, row):
     frontier_id, source_id, url = row
@@ -100,8 +134,9 @@ async def page_job(state, domain, row):
     # if process_url raised an error, this line is never reached and the row stays.
     remove_from_frontier(state.conn, frontier_id)
 
+
 async def process_url(state, domain, source_id, url):
-    '''Crawls url, or returns early if it's skipped.'''
+    """Crawls url, or returns early if it's skipped."""
     # Already crawled, or skipped earlier this run: link saved if applicable, no request
     if try_save_link_if_visited(state.conn, state.url_to_id, source_id, url):
         return
@@ -118,9 +153,10 @@ async def process_url(state, domain, source_id, url):
     final_url, status_code, body = fetched
     record_page(state, source_id, url, final_url, status_code, body)
 
+
 async def fetch_page(state, domain, source_id, url):
-    '''Requests url and runs every check on the response.
-    Returns (final_url, status_code, body), or None if the page was skipped.'''
+    """Requests url and runs every check on the response.
+    Returns (final_url, status_code, body), or None if the page was skipped."""
     try:
         async with state.client.stream('GET', url) as response:
             final_url = str(response.url)
@@ -138,13 +174,19 @@ async def fetch_page(state, domain, source_id, url):
 
             # Check if final URL is visited. If so, url redirected there:
             # point it at the same entry, so it isn't fetched again
-            if try_save_link_if_visited(state.conn, state.url_to_id, source_id, final_url):
+            if try_save_link_if_visited(
+                state.conn, state.url_to_id, source_id, final_url
+            ):
                 state.url_to_id[url] = state.url_to_id[final_url]
                 return None
 
             # Skip non-successful response codes
             if not response.is_success:
-                mark_skipped(f'Non-2xx response ({response.status_code})', final_url, state.url_to_id)
+                mark_skipped(
+                    f'Non-2xx response ({response.status_code})',
+                    final_url,
+                    state.url_to_id,
+                )
                 return None
 
             # Any other redirect can leave the crawl's scope
@@ -169,17 +211,22 @@ async def fetch_page(state, domain, source_id, url):
 
             # Skip non-page responses
             content_type = response.headers.get('Content-Type', '').lower()
-            if not (
-                content_type.startswith('text/html') or
-                content_type.startswith('text/plain')
-            ):
-                mark_skipped(f'Skipping non-page response ({content_type})', final_url, state.url_to_id)
+            if not content_type.startswith(('text/html', 'text/plain')):
+                mark_skipped(
+                    f'Skipping non-page response ({content_type})',
+                    final_url,
+                    state.url_to_id,
+                )
                 return None
 
             # Page says it's in another language: skip it before downloading the body
             content_language = response.headers.get('Content-Language')
             if other_language(content_language):
-                mark_skipped(f'Page in another language ({content_language})', final_url, state.url_to_id)
+                mark_skipped(
+                    f'Page in another language ({content_language})',
+                    final_url,
+                    state.url_to_id,
+                )
                 return None
 
             # Skip early if server tells us size
@@ -195,7 +242,9 @@ async def fetch_page(state, domain, source_id, url):
                 async for chunk in response.aiter_bytes():
                     body += chunk
                     if len(body) > MAX_RESPONSE_SIZE:
-                        mark_skipped('Skipping large response', final_url, state.url_to_id)
+                        mark_skipped(
+                            'Skipping large response', final_url, state.url_to_id
+                        )
                         return None
             except httpx2.HTTPError:
                 mark_skipped('Failed to download body', final_url, state.url_to_id)
@@ -206,10 +255,11 @@ async def fetch_page(state, domain, source_id, url):
         mark_skipped('Failed to reach page', url, state.url_to_id)
         return None
 
+
 def record_page(state, source_id, url, final_url, status_code, body):
-    '''Parses and saves a fetched page, and queues its links.
+    """Parses and saves a fetched page, and queues its links.
     A plain def, not async: no other worker can run between save_page and
-    writing the page's links and frontier rows, so they always end up in the same commit.'''
+    writing the page's links and frontier rows, so they always end up in the same commit."""
     title, content, children, lang = parse_page(body, final_url)
 
     # Page says it's in another language (<html lang>, for sites that don't send
@@ -225,12 +275,16 @@ def record_page(state, source_id, url, final_url, status_code, body):
     # the same ones - that also stops a duplicate tree from spreading.
     content_hash = hash_content(title, content)
     if content_hash in state.hash_to_id:
-        state.url_to_id[url] = state.url_to_id[final_url] = state.hash_to_id[content_hash]
+        state.url_to_id[url] = state.url_to_id[final_url] = state.hash_to_id[
+            content_hash
+        ]
         try_save_link_if_visited(state.conn, state.url_to_id, source_id, final_url)
         print(f'\nDuplicate of an already-crawled page: {final_url}')
         return
 
-    page_id = save_page(state.conn, final_url, title, content, status_code, content_hash)
+    page_id = save_page(
+        state.conn, final_url, title, content, status_code, content_hash
+    )
     state.url_to_id[final_url] = page_id
     if content_hash is not None:
         state.hash_to_id[content_hash] = page_id
@@ -278,55 +332,64 @@ def record_page(state, source_id, url, final_url, status_code, body):
     if state.pages_crawled >= state.max_pages:
         state.scheduler.stop()
 
-    print(f'\rCrawling page {state.pages_crawled}/{state.max_pages} ({final_url})'.ljust(120), end='', flush=True)
+    print(
+        f'\rCrawling page {state.pages_crawled}/{state.max_pages} ({final_url})'.ljust(
+            120
+        ),
+        end='',
+        flush=True,
+    )
+
 
 def skip_url(url):
     parsed = urlsplit(url)
-
     if parsed.scheme not in ('http', 'https'):
         return True
-
     path = parsed.path.lower()
-    if any(path.endswith(ext) for ext in SKIP_EXTENSIONS):
-        return True
+    return any(path.endswith(ext) for ext in SKIP_EXTENSIONS)
 
-    return False
 
 def other_language(tag):
-    '''True if a language tag ("lt", "en-GB", or a Content-Language list like "en, fr")
+    """True if a language tag ("lt", "en-GB", or a Content-Language list like "en, fr")
     names only languages outside LANGUAGES. A missing or empty tag counts as allowed,
     since most links and many pages don't declare one. Locale-style tags like "en_US"
-    aren't valid BCP 47, but some sites use them, so "_" counts as "-".'''
-    tags = [t.strip().replace('_', '-').split('-')[0].lower() for t in (tag or '').split(',') if t.strip()]
-    tags = [t for t in tags if t != 'x'] # private-use values like "x-default" aren't languages
+    aren't valid BCP 47, but some sites use them, so "_" counts as "-"."""
+    tags = [
+        t.strip().replace('_', '-').split('-')[0].lower()
+        for t in (tag or '').split(',')
+        if t.strip()
+    ]
+    tags = [
+        t for t in tags if t != 'x'
+    ]  # private-use values like "x-default" aren't languages
     return bool(tags) and not any(t in LANGUAGES for t in tags)
 
+
 def try_save_link_if_visited(conn, url_to_id, source_id, url):
-    '''Returns True if url was already visited (and link saved if applicable)'''
+    """Returns True if url was already visited (and link saved if applicable)"""
     if url not in url_to_id:
         return False
     target_id = url_to_id[url]
-    if (
-        target_id is not None and
-        source_id is not None and
-        source_id != target_id
-    ):
+    if target_id is not None and source_id is not None and source_id != target_id:
         save_link(conn, source_id, target_id)
     return True
+
 
 def mark_skipped(reason, url, url_to_id):
     print(f'\n{reason}: {url}')
     url_to_id[url] = None
 
+
 def hash_content(title, content):
-    '''Fingerprint of a page's indexed text, for spotting the same page served
-    under several URLs. None for a page with no text, since those would all match.'''
+    """Fingerprint of a page's indexed text, for spotting the same page served
+    under several URLs. None for a page with no text, since those would all match."""
     if not content:
         return None
     return hashlib.sha256(f'{title}\n{content}'.encode()).hexdigest()
 
+
 def seed_frontier(conn, seed_urls):
-    '''Adds seed URLs to the frontier, and their hosts to the crawl scope'''
+    """Adds seed URLs to the frontier, and their hosts to the crawl scope"""
     for url in seed_urls:
         if skip_url(url):
             print(f'Invalid seed URL: {url}')
@@ -335,9 +398,10 @@ def seed_frontier(conn, seed_urls):
         add_to_frontier(conn, None, url)
     conn.commit()
 
+
 def parse_page(html_body, url):
-    '''Returns title, content, accepted children links (skip_url -> False, robots.txt
-    check happens where the function is called), and the page's declared language.'''
+    """Returns title, content, accepted children links (skip_url -> False, robots.txt
+    check happens where the function is called), and the page's declared language."""
     # encoding=True: read the encoding from the page (<meta charset> etc.) instead of assuming UTF-8
     tree = LexborHTMLParser(html_body, encoding=True)
 
@@ -347,7 +411,8 @@ def parse_page(html_body, url):
     # Links that say they lead to a page in another language (hreflang) are dropped
     # before any other work, e.g. Wikipedia's links to its other-language editions
     hrefs = (
-        node.attributes.get('href') for node in tree.css('a[href]')
+        node.attributes.get('href')
+        for node in tree.css('a[href]')
         if not other_language(node.attributes.get('hreflang'))
     )
 
@@ -366,7 +431,7 @@ def parse_page(html_body, url):
             new_url, _ = urldefrag(new_url)
         except ValueError:
             continue
-        
+
         if skip_url(new_url):
             continue
         children.append(new_url)

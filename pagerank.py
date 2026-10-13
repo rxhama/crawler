@@ -1,11 +1,12 @@
 def load_graph(conn):
     with conn.cursor() as cur:
-        cur.execute('''
+        cur.execute("""
             SELECT source_id, target_id
             FROM links
-        ''')
+        """)
 
         return cur.fetchall()
+
 
 def build_graph(rows):
     graph = {}
@@ -13,7 +14,7 @@ def build_graph(rows):
     for source_id, target_id in rows:
         if source_id not in graph:
             graph[source_id] = set()
-        
+
         graph[source_id].add(target_id)
 
         if target_id not in graph:
@@ -21,11 +22,13 @@ def build_graph(rows):
 
     return graph
 
+
 def initialise_ranks(graph):
     num_pages = len(graph)
     initial_rank = 1 / num_pages
 
     return {page_id: initial_rank for page_id in graph}
+
 
 def calculate_ranks(graph, ranks, damping_factor=0.85):
     num_pages = len(graph)
@@ -52,15 +55,15 @@ def calculate_ranks(graph, ranks, damping_factor=0.85):
 
     return new_ranks
 
+
 # Runs many iterations of calculate_ranks(...)
-def get_pageranks(graph, ranks, damping_factor=0.85, tolerance=1e-6, max_iterations=100):
+def get_pageranks(
+    graph, ranks, damping_factor=0.85, tolerance=1e-6, max_iterations=100
+):
     for _ in range(max_iterations):
         new_ranks = calculate_ranks(graph, ranks, damping_factor)
 
-        difference = max(
-            abs(new_ranks[page_id] - ranks[page_id])
-            for page_id in graph
-        )
+        difference = max(abs(new_ranks[page_id] - ranks[page_id]) for page_id in graph)
 
         ranks = new_ranks
 
@@ -68,6 +71,7 @@ def get_pageranks(graph, ranks, damping_factor=0.85, tolerance=1e-6, max_iterati
             break
 
     return ranks
+
 
 def save_pageranks(conn):
     rows = load_graph(conn)
@@ -79,11 +83,14 @@ def save_pageranks(conn):
     ranks = list(pageranks.values())
 
     with conn.cursor() as cur:
-        cur.execute('''
+        cur.execute(
+            """
             UPDATE pages AS p
             SET pagerank = data.pagerank
             FROM (
                 SELECT * FROM unnest(%s::int[], %s::float8[]) AS t(id, pagerank)
             ) AS data
             WHERE p.id = data.id
-        ''', (ids, ranks))
+        """,
+            (ids, ranks),
+        )

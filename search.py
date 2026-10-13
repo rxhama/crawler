@@ -17,9 +17,11 @@
 
 #         return cur.fetchall()
 
+
 def search_pages(conn, query, limit=20, offset=0, pagerank_weight=0.3):
     with conn.cursor() as cur:
-        cur.execute('''
+        cur.execute(
+            """
             SELECT
                 url,
                 title,
@@ -29,6 +31,8 @@ def search_pages(conn, query, limit=20, offset=0, pagerank_weight=0.3):
             WHERE search_vector @@ q
             ORDER BY score DESC
             LIMIT %s OFFSET %s
-        ''', (pagerank_weight, query, limit, offset))
+        """,
+            (pagerank_weight, query, limit, offset),
+        )
 
         return cur.fetchall()

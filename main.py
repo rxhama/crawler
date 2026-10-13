@@ -1,17 +1,29 @@
 import argparse
-import psycopg
 import asyncio
 
-from database import init_db, clear_db, reset_db
+import psycopg
+
 from crawler import crawl, seed_frontier
+from database import clear_db, init_db, reset_db
 from pagerank import save_pageranks
 from search import search_pages
+
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('command', choices=['crawl', 'search', 'clear', 'reset'])
-    parser.add_argument('--seeds', nargs='?', const='seeds.txt', metavar='FILE', help='crawl: add the URLs in FILE (seeds.txt if no FILE is given; one per line, # for comments) to the frontier first')
-    parser.add_argument('--unbounded', action='store_true', help='crawl: follow links to any host, not just seed hosts')
+    parser.add_argument(
+        '--seeds',
+        nargs='?',
+        const='seeds.txt',
+        metavar='FILE',
+        help='crawl: add the URLs in FILE (seeds.txt if no FILE is given; one per line, # for comments) to the frontier first',
+    )
+    parser.add_argument(
+        '--unbounded',
+        action='store_true',
+        help='crawl: follow links to any host, not just seed hosts',
+    )
 
     args = parser.parse_args()
     if args.command != 'crawl' and (args.seeds or args.unbounded):
@@ -48,7 +60,9 @@ def main():
                 # crawl() commits what's finished when Ctrl-C cancels it. A second
                 # Ctrl-C can land in the middle of a page's writes, so drop anything uncommitted
                 conn.rollback()
-                print('\nCrawl interrupted. Finished pages are saved. Run crawl again to resume.')
+                print(
+                    '\nCrawl interrupted. Finished pages are saved. Run crawl again to resume.'
+                )
                 return
             save_pageranks(conn)
 
@@ -60,19 +74,28 @@ def main():
                 print(f'{title} ({url}) - score: {score}')
 
         elif args.command == 'clear':
-            if input('This will delete all crawl data. Are you sure? [y/N]: ').lower() != 'y':
+            if (
+                input('This will delete all crawl data. Are you sure? [y/N]: ').lower()
+                != 'y'
+            ):
                 print('Clear aborted.')
                 return
             clear_db(conn)
             print('DB cleared.')
 
         elif args.command == 'reset':
-            if input('This will delete and recreate all tables, deleting all crawl data. Are you sure? [y/N]: ').lower() != 'y':
+            if (
+                input(
+                    'This will delete and recreate all tables, deleting all crawl data. Are you sure? [y/N]: '
+                ).lower()
+                != 'y'
+            ):
                 print('Reset aborted.')
                 return
             reset_db(conn)
             init_db(conn)
             print('DB reset and re-initialised.')
+
 
 if __name__ == '__main__':
     main()
